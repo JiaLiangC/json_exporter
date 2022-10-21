@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"path"
 )
 
 func configLoad(logger log.Logger, path string) *exporter.Config {
@@ -34,7 +35,11 @@ func configLoad(logger log.Logger, path string) *exporter.Config {
 func main() {
 	w := klog.NewSyncWriter(os.Stdout)
 	logger := klog.NewLogfmtLogger(w)
-	config := configLoad(logger, "conf/conf.yml")
+	dir, err := os.Getwd()
+	if err != nil {
+		level.Error(logger).Log("msg", "Error handle / request", "error", err)
+	}
+	config := configLoad(logger, path.Join(dir, "conf/conf.yaml"))
 	exporter, _ := exporter.NewExporter(logger, config)
 
 	prometheus.MustRegister(exporter)
