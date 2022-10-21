@@ -1,0 +1,13 @@
+verbosityLogLevel: 2
+listenAddr: 0.0.0.0:9308
+
+Components:
+  - { name: "HiveServer2",port: 10002,processName: "Dproc_hiveserver2" }
+  - { name: "HbaseMaster",port: 16010,processName: "org.apache.hadoop.hbase.master.HMaster"}
+  - { name: "HbaseRegionServer",port: 16030,processName: "org.apache.hadoop.hbase.regionserver.HRegionServer"}
+  - { name: "YarnResourceManager",port: 8088,processName: "org.apache.hadoop.yarn.server.resourcemanager.ResourceManager"}
+  - { name: "YarnNodeManager",port: 8042,processName: "Dproc_nodemanager"}
+  - { name: "HadoopNameNode",port: 50070,processName: "org.apache.hadoop.hdfs.server.namenode.NameNode"}
+  - { name: "HadoopDataNode",port: 1022,processName: "Dproc_datanode"}
+  - { name: "ImpalaImpalad",port: 25000,processName: "impalad"}
+  - { name: "ImpalaCatalogd",port: 25020,processName: "catalogd"}
