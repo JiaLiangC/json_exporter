@@ -21,11 +21,12 @@ import (
 )
 
 type Config struct {
-	ListenAddr        string             `yaml:"listenAddr"`
-	Components []ComponentOptions `yaml:"Components"`
+	ListenAddr   string            `yaml:"listenAddr"`
+	WhiteListDir string            `yaml:"whiteListDir"`
+	Components   []ComponentOption `yaml:"Components"`
 }
 
-type ComponentOptions struct {
+type ComponentOption struct {
 	ProcessName           string `yaml:"processName"`
 	Port                  int    `yaml:"port"`
 	Name                  string `yaml:"name"`
@@ -36,7 +37,7 @@ type ComponentOptions struct {
 }
 
 type Component struct {
-	ComponentOptions
+	ComponentOption
 	promMetricsDesc  map[string]*prometheus.Desc
 	metricsWhiteList singlylinkedlist.List
 	logger           log.Logger
@@ -374,8 +375,11 @@ func NewExporter(logger log.Logger, config *Config) (*Exporter, error) {
 		logger:     logger,
 	}
 
-	for _, componentOptions := range config.Components {
-		c := &Component{logger: logger, ComponentOptions: componentOptions}
+	for _, componentOption := range config.Components {
+		if len(componentOption.WhiteListDir) == 0 {
+			componentOption.WhiteListDir = config.WhiteListDir
+		}
+		c := &Component{logger: logger, ComponentOption: componentOption}
 		c.initialize()
 		e.components.Add(c)
 	}
@@ -391,9 +395,9 @@ func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
-func (s *ComponentOptions) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (s *ComponentOption) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	defaults.Set(s)
-	type plain ComponentOptions
+	type plain ComponentOption
 	if err := unmarshal((*plain)(s)); err != nil {
 		return err
 	}
