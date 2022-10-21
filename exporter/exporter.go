@@ -21,16 +21,15 @@ import (
 )
 
 type Config struct {
-	VerbosityLogLevel int                `default:"0" yaml:"verbosityLogLevel"`
 	ListenAddr        string             `yaml:"listenAddr"`
-	Components        []ComponentOptions `yaml:"Components"`
+	Components []ComponentOptions `yaml:"Components"`
 }
 
 type ComponentOptions struct {
 	ProcessName           string `yaml:"processName"`
 	Port                  int    `yaml:"port"`
 	Name                  string `yaml:"name"`
-	WhiteListDir          string `default:"/usr/hdp/2.5.0.1-91/grafana_agent/conf/" yaml:"whiteListDir"`
+	WhiteListDir          string `yaml:"whiteListDir"`
 	AllowRecursiveParse   bool   `default:"false" yaml:"allowRecursiveParse"`
 	AllowMetricsWhiteList bool   `default:"true" yaml:"allowMetricsWhiteList"`
 	JmxSuffix             string `default:"/jmx" yaml:"jmxUrlSuffix"`
@@ -65,7 +64,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		e.sgWaitCh = make(chan struct{})
 		go e.collectChans(e.sgWaitCh)
 	} else {
-		level.Info(e.logger).Log("concurrent calls detected, waiting for first to finish")
+		level.Info(e.logger).Log("info", "concurrent calls detected, waiting for first to finish")
 	}
 	// Put in another variable to ensure not overwriting it in another Collect once we wait
 	waiter := e.sgWaitCh
@@ -110,15 +109,15 @@ func (e *Exporter) collectMetrics(ch chan<- prometheus.Metric) {
 		if !component.isProcessExisted() {
 			return
 		}
-		level.Debug(e.logger).Log("get metrics  data from url: ", component.composeMetricUrl())
+		level.Debug(e.logger).Log("msg", "getting metrics  data from url", "url", component.composeMetricUrl())
 		data, getDataErr := component.getData(component.composeMetricUrl())
 		if getDataErr != nil {
-			level.Error(e.logger).Log("get metrics  data from url:%s error:%s", component.composeMetricUrl(), getDataErr)
+			level.Error(e.logger).Log("msg", "get metrics  data from url error", "url", component.composeMetricUrl(), "error", getDataErr)
 			return
 		}
 		res, fetchDataErr := component.fetchData(data)
 		if fetchDataErr != nil {
-			level.Error(e.logger).Log("err in fetchData: ", fetchDataErr)
+			level.Error(e.logger).Log("msg", "err in fetchData: ", "error", fetchDataErr)
 			return
 		}
 		//	 update metrics value,if not exist then register it
@@ -245,7 +244,7 @@ func (e *Component) fetchData(data map[string]interface{}) (map[string]MetricsDa
 				if valueKind == reflect.Map || valueKind == reflect.Slice {
 					hierarchy = append(hierarchy, clearedMetricsKey)
 					if e.AllowRecursiveParse {
-						level.Debug(e.logger).Log("recursive fetch start")
+						level.Debug(e.logger).Log("msg", "recursive fetch start")
 						return recursiveFetch(metricsValue, hierarchy)
 					}
 				} else {
@@ -255,7 +254,7 @@ func (e *Component) fetchData(data map[string]interface{}) (map[string]MetricsDa
 						finalKey = clearedMetricsKey
 					} else {
 						finalKey = strings.Join(keyArr, "_")
-						level.Debug(e.logger).Log("finalKey in recursive is ", finalKey)
+						level.Debug(e.logger).Log("msg", "finalKey in recursive ", "key", finalKey)
 					}
 
 					metricsData, filterErr := e.filterMetricsValue(finalKey, metricsValue)
@@ -269,7 +268,6 @@ func (e *Component) fetchData(data map[string]interface{}) (map[string]MetricsDa
 		case reflect.Slice:
 			for _, item := range data.([]interface{}) {
 				itemKind := reflect.ValueOf(item).Kind()
-				//如果是array 不处理除map array 类型以外的数据
 				if itemKind == reflect.Map || itemKind == reflect.Slice {
 					return recursiveFetch(item, hierarchy)
 				}
@@ -327,16 +325,16 @@ func (e *Component) initialize() error {
 		}
 		fileName := e.Name + ".json"
 		fnameAbsPath := path.Join(e.WhiteListDir, fileName)
-		level.Debug(e.logger).Log("read json file %s", fnameAbsPath)
+		level.Debug(e.logger).Log("msg", "read json file", "path", fnameAbsPath)
 		fp, err := os.Open(fnameAbsPath)
 		if err != nil {
-			level.Error(e.logger).Log("open json file %s error: %s", fnameAbsPath, err)
+			level.Error(e.logger).Log("msg", "open json file error", "path", fnameAbsPath, "error", err)
 			return err
 		}
 		defer fp.Close()
 		bytes, err := ioutil.ReadAll(fp)
 		if err != nil {
-			level.Error(e.logger).Log("read json file %s error: %s", fnameAbsPath, err)
+			level.Error(e.logger).Log("msg", "read json file error", "path", fnameAbsPath, "error", err)
 			return err
 		}
 
@@ -344,7 +342,7 @@ func (e *Component) initialize() error {
 		metricsWhiteListJsonMap = make(map[string]string)
 		err = json.Unmarshal(bytes, &metricsWhiteListJsonMap)
 		if err != nil {
-			level.Error(e.logger).Log("Unmarshal json file %s error: %s", fnameAbsPath, err)
+			level.Error(e.logger).Log("msg", "Unmarshal json file error", "path", fnameAbsPath, "error", err)
 			return err
 		}
 		for metricsKey, _ := range metricsWhiteListJsonMap {
@@ -352,7 +350,7 @@ func (e *Component) initialize() error {
 			e.metricsWhiteList.Add(clearedMetricsKey)
 		}
 	}
-	level.Debug(e.logger).Log("metrics whitelist is ", e.metricsWhiteList.String())
+	level.Debug(e.logger).Log("whitelist", e.metricsWhiteList.String())
 	return nil
 }
 
@@ -373,10 +371,11 @@ func NewExporter(logger log.Logger, config *Config) (*Exporter, error) {
 		sgMutex:    sync.Mutex{},
 		sgWaitCh:   nil,
 		sgChans:    []chan<- prometheus.Metric{},
+		logger:     logger,
 	}
 
 	for _, componentOptions := range config.Components {
-		c := &Component{ComponentOptions: componentOptions}
+		c := &Component{logger: logger, ComponentOptions: componentOptions}
 		c.initialize()
 		e.components.Add(c)
 	}
