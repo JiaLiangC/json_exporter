@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -230,8 +231,8 @@ func (e *Component) filterMetricsValue(clearedMetricsKey string, metricsValue in
 	return metricsData, nil
 }
 
-func (e *Component) fetchData(data map[string]interface{}) (map[string]MetricsData, error) {
-	dataList := make(map[string]MetricsData)
+func (e *Component) fetchData(data map[string]interface{}) ([]MetricsData, error) {
+	dataList := make([]MetricsData, 0)
 	var recursiveFetch func(data interface{}, hierarchy []string) interface{}
 
 	recursiveFetch = func(data interface{}, hierarchy []string) interface{} {
@@ -239,30 +240,34 @@ func (e *Component) fetchData(data map[string]interface{}) (map[string]MetricsDa
 		case reflect.Map:
 			labels := e.generateLabelPairs(data.(map[string]interface{}))
 			for metricsKey, metricsValue := range data.(map[string]interface{}) {
+				if hierarchy == nil {
+					hierarchy = make([]string, 0)
+				}
 				clearedMetricsKey := metricsKeyClear(metricsKey)
 				valueKind := reflect.ValueOf(metricsValue).Kind()
-				//开启递归采集时 才会递归进入Map，否则只处理单层map
 				if valueKind == reflect.Map || valueKind == reflect.Slice {
-					hierarchy = append(hierarchy, clearedMetricsKey)
 					if e.AllowRecursiveParse {
+						hierarchy = append(hierarchy, clearedMetricsKey)
 						level.Debug(e.logger).Log("msg", "recursive fetch start")
-						return recursiveFetch(metricsValue, hierarchy)
+						recursiveFetch(metricsValue, hierarchy)
 					}
 				} else {
-					keyArr := append(hierarchy, clearedMetricsKey)
 					var finalKey string
-					if len(hierarchy) == 0 {
-						finalKey = clearedMetricsKey
-					} else {
-						finalKey = strings.Join(keyArr, "_")
-						level.Debug(e.logger).Log("msg", "finalKey in recursive ", "key", finalKey)
-					}
-
+					keyArr := append(hierarchy, clearedMetricsKey)
+					finalKey = strings.Join(keyArr, "_")
+					hierarchy = nil
+					level.Debug(e.logger).Log("msg", "finalKey in recursive ", "key", finalKey)
 					metricsData, filterErr := e.filterMetricsValue(finalKey, metricsValue)
 					if filterErr == nil {
+						numberPrefixRegex := regexp.MustCompile(`^\d`)
+						if numberPrefixRegex.Match([]byte(finalKey)) {
+							//level.Debug(e.logger).Log("msg", "finalKey in start with number skip  ", "key", finalKey)
+							//continue
+							finalKey = "num_" + finalKey
+						}
 						metricsData.promDesc = e.getOrCreatePromDesc(finalKey, labels)
 						metricsData.labelPair = labels
-						dataList[finalKey] = metricsData
+						dataList = append(dataList, metricsData)
 					}
 				}
 			}
@@ -270,27 +275,27 @@ func (e *Component) fetchData(data map[string]interface{}) (map[string]MetricsDa
 			for _, item := range data.([]interface{}) {
 				itemKind := reflect.ValueOf(item).Kind()
 				if itemKind == reflect.Map || itemKind == reflect.Slice {
-					return recursiveFetch(item, hierarchy)
+					recursiveFetch(item, hierarchy)
 				}
 			}
+		case reflect.Array:
+			level.Debug(e.logger).Log("msg", "array data not supported")
 		default:
 		}
 
 		return nil
 	}
 
-	treePath := make([]string, 0)
 	if value, ok := data["beans"]; ok {
 		var nameList = value.([]interface{})
-		for _, nameData := range nameList {
-			nameDataMap := nameData.(map[string]interface{})
-			recursiveFetch(nameDataMap, treePath)
-		}
+		recursiveFetch(nameList, nil)
 	} else {
-		recursiveFetch(data, treePath)
+		recursiveFetch(data, nil)
 	}
 	return dataList, nil
 }
+
+//注意同名，但是不同标签的 metrics 情况
 func (e *Component) getOrCreatePromDesc(metricsKey string, labels map[string]string) *prometheus.Desc {
 	getLabelVariables := func(mp map[string]string) []string {
 		keys := make([]string, 0, len(mp))
@@ -300,15 +305,25 @@ func (e *Component) getOrCreatePromDesc(metricsKey string, labels map[string]str
 		return keys
 	}
 
-	if promDesc, ok := e.promMetricsDesc[metricsKey]; !ok {
+	getLabelStr := func(mp map[string]string) string {
+		mapArr := make([]string, len(mp))
+		for k, v := range mp {
+			mapArr = append(mapArr, k+v)
+		}
+		concatenatedLabel := strings.Join(mapArr, "")
+		return concatenatedLabel
+	}
+
+	metricsUniqKey := metricsKey + getLabelStr(labels)
+	if promDesc, ok := e.promMetricsDesc[metricsUniqKey]; !ok {
 		hostName, _ := os.Hostname()
 		constLabelPair := map[string]string{"hostname": hostName, "component": e.Name}
 		promDesc = prometheus.NewDesc(
 			prometheus.BuildFQName("", "", metricsKey),
 			"description", getLabelVariables(labels), constLabelPair)
-		e.promMetricsDesc[metricsKey] = promDesc
+		e.promMetricsDesc[metricsUniqKey] = promDesc
 	}
-	return e.promMetricsDesc[metricsKey]
+	return e.promMetricsDesc[metricsUniqKey]
 }
 
 func (e *Component) getPromMetricsDesc() map[string]*prometheus.Desc {
