@@ -197,7 +197,6 @@ func (e *Component) isProcessExisted() bool {
 func (e *Component) getData(requestURL string) (map[string]interface{}, error) {
 	if globalConfig.UseSASL {
 		globalConfig.SaslMechanism = strings.ToLower(globalConfig.SaslMechanism)
-		fmt.Printf("globalConfig is %v", globalConfig)
 		switch globalConfig.SaslMechanism {
 		case "gssapi":
 			if globalConfig.KerberosAuthType == "keytabAuth" {
