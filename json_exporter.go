@@ -32,13 +32,14 @@ func configLoad(logger log.Logger, path string) *exporter.Config {
 	return config
 }
 
-func main() {
+func setupExporter() {
 	w := klog.NewSyncWriter(os.Stdout)
 	logger := klog.NewLogfmtLogger(w)
 	dir, err := os.Getwd()
 	if err != nil {
 		level.Error(logger).Log("msg", "Error handle / request", "error", err)
 	}
+
 	config := configLoad(logger, path.Join(dir, "conf/conf.yaml"))
 	exporter, _ := exporter.NewExporter(logger, config)
 
@@ -62,4 +63,8 @@ func main() {
 		level.Error(logger).Log("msg", "http server start error:", "error", httpErr)
 	}
 	level.Info(logger).Log("listen_addr", config.ListenAddr)
+}
+
+func main() {
+	setupExporter()
 }

@@ -8,6 +8,10 @@ import (
 	"github.com/emirpasic/gods/lists/singlylinkedlist"
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
+	"github.com/jcmturner/gokrb5/v8/client"
+	"github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/jcmturner/gokrb5/v8/spnego"
 	"github.com/prometheus/client_golang/prometheus"
 	"io/ioutil"
 	"net/http"
@@ -22,10 +26,21 @@ import (
 )
 
 type Config struct {
-	ListenAddr   string            `yaml:"listenAddr"`
-	WhiteListDir string            `yaml:"whiteListDir"`
-	Components   []ComponentOption `yaml:"Components"`
+	ListenAddr          string            `yaml:"listenAddr"`
+	WhiteListDir        string            `yaml:"whiteListDir"`
+	UseSASL             bool              `default:"false" yaml:"useSASL"`
+	SaslUsername        string            `yaml:"saslUsername"`
+	SaslDisablePAFXFast bool              `default:"true" yaml:"saslDisablePAFXFast"`
+	SaslMechanism       string            `yaml:"saslMechanism"`
+	KerberosAuthType    string            `yaml:"kerberosAuthType"`
+	KeyTabPath          string            `yaml:"keyTabPath"`
+	KerberosConfigPath  string            `yaml:"kerberosConfigPath"`
+	Realm               string            `yaml:"realm"`
+	Components          []ComponentOption `yaml:"Components"`
 }
+
+var globalConfig = Config{}
+var hostName = getHostName()
 
 type ComponentOption struct {
 	ProcessName           string `yaml:"processName"`
@@ -165,7 +180,7 @@ func getHostName() string {
 }
 
 func (e *Component) composeMetricUrl() string {
-	url := fmt.Sprintf("http://%s:%d%s", getHostName(), e.Port, e.JmxSuffix)
+	url := fmt.Sprintf("http://%s:%d%s", hostName, e.Port, e.JmxSuffix)
 	return url
 }
 func (e *Component) isProcessExisted() bool {
@@ -180,6 +195,23 @@ func (e *Component) isProcessExisted() bool {
 
 //register 后存入hash，之后取出 set value
 func (e *Component) getData(requestURL string) (map[string]interface{}, error) {
+	if globalConfig.UseSASL {
+		globalConfig.SaslMechanism = strings.ToLower(globalConfig.SaslMechanism)
+		fmt.Printf("globalConfig is %v", globalConfig)
+		switch globalConfig.SaslMechanism {
+		case "gssapi":
+			if globalConfig.KerberosAuthType == "keytabAuth" {
+				return e.getDataWithSpnego(requestURL)
+			}
+		case "plain":
+		default:
+			return nil, fmt.Errorf(
+				`invalid sasl mechanism "%s": can only be "scram-sha256", "scram-sha512", "gssapi" or "plain"`,
+				globalConfig.SaslMechanism,
+			)
+		}
+	}
+
 	resp, err := http.Get(requestURL)
 	if err != nil {
 		return nil, errors.New("get data from " + requestURL + " failed")
@@ -195,6 +227,53 @@ func (e *Component) getData(requestURL string) (map[string]interface{}, error) {
 		return nil, errors.New("parse json failed")
 	}
 	return f, nil
+}
+
+func (e *Component) getDataWithSpnego(requestURL string) (map[string]interface{}, error) {
+	SaslUsername := globalConfig.SaslUsername
+	if globalConfig.SaslUsername == "HTTP/_HOST" {
+		SaslUsername = fmt.Sprintf("HTTP/%s", hostName)
+	}
+
+	kt, err := keytab.Load(globalConfig.KeyTabPath)
+	if err != nil {
+		fmt.Printf("could not load client keytab %v", err)
+	}
+	// Load the client krb5 config
+	krb5ConfData, err := os.Open(globalConfig.KerberosConfigPath)
+	krb5Conf, err := config.NewFromReader(krb5ConfData)
+
+	if err != nil {
+		fmt.Printf("could not load krb5.conf: %v", err)
+	}
+	cl := client.NewWithKeytab(SaslUsername, krb5Conf.Realms[0].Realm, kt, krb5Conf, client.DisablePAFXFAST(globalConfig.SaslDisablePAFXFast))
+	// Log in the client
+	err = cl.Login()
+	if err != nil {
+		fmt.Printf("could not login client %v", err)
+	}
+	// Form the request
+	r, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		fmt.Printf("could create request %v", err)
+	}
+
+	spnegoCl := spnego.NewClient(cl, nil, SaslUsername)
+	resp, err := spnegoCl.Do(r)
+	if err != nil {
+		fmt.Printf("error making request %v", err)
+	}
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.New("read data from " + requestURL + " json failed")
+	}
+	var f = make(map[string]interface{})
+	err = json.Unmarshal(data, &f)
+	if err != nil {
+		return nil, errors.New("parse json failed")
+	}
+	return f, nil
+
 }
 
 func (e *Component) generateLabelPairs(nameDataMap map[string]interface{}) map[string]string {
@@ -256,13 +335,10 @@ func (e *Component) fetchData(data map[string]interface{}) ([]MetricsData, error
 					keyArr := append(hierarchy, clearedMetricsKey)
 					finalKey = strings.Join(keyArr, "_")
 					hierarchy = nil
-					level.Debug(e.logger).Log("msg", "finalKey in recursive ", "key", finalKey)
 					metricsData, filterErr := e.filterMetricsValue(finalKey, metricsValue)
 					if filterErr == nil {
 						numberPrefixRegex := regexp.MustCompile(`^\d`)
 						if numberPrefixRegex.Match([]byte(finalKey)) {
-							//level.Debug(e.logger).Log("msg", "finalKey in start with number skip  ", "key", finalKey)
-							//continue
 							finalKey = "num_" + finalKey
 						}
 						metricsData.promDesc = e.getOrCreatePromDesc(finalKey, labels)
@@ -295,7 +371,6 @@ func (e *Component) fetchData(data map[string]interface{}) ([]MetricsData, error
 	return dataList, nil
 }
 
-//注意同名，但是不同标签的 metrics 情况
 func (e *Component) getOrCreatePromDesc(metricsKey string, labels map[string]string) *prometheus.Desc {
 	getLabelVariables := func(mp map[string]string) []string {
 		keys := make([]string, 0, len(mp))
@@ -316,7 +391,6 @@ func (e *Component) getOrCreatePromDesc(metricsKey string, labels map[string]str
 
 	metricsUniqKey := metricsKey + getLabelStr(labels)
 	if promDesc, ok := e.promMetricsDesc[metricsUniqKey]; !ok {
-		hostName, _ := os.Hostname()
 		constLabelPair := map[string]string{"hostname": hostName, "component": e.Name}
 		promDesc = prometheus.NewDesc(
 			prometheus.BuildFQName("", "", metricsKey),
@@ -366,7 +440,7 @@ func (e *Component) initialize() error {
 			e.metricsWhiteList.Add(clearedMetricsKey)
 		}
 	}
-	level.Debug(e.logger).Log("whitelist", e.metricsWhiteList.String())
+	//level.Debug(e.logger).Log("whitelist", e.metricsWhiteList.String())
 	return nil
 }
 
@@ -382,6 +456,7 @@ func metricsKeyClear(metricsKey string) string {
 }
 
 func NewExporter(logger log.Logger, config *Config) (*Exporter, error) {
+	globalConfig = *config
 	e := Exporter{
 		components: singlylinkedlist.New(),
 		sgMutex:    sync.Mutex{},
