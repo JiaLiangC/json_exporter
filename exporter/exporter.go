@@ -236,35 +236,41 @@ func (e *Component) getDataWithSpnego(requestURL string) (map[string]interface{}
 
 	kt, err := keytab.Load(globalConfig.KeyTabPath)
 	if err != nil {
-		fmt.Printf("could not load client keytab %v", err)
+		errInfo := fmt.Sprintf("could not load client keytab %s", err)
+		return nil, errors.New(errInfo)
 	}
 	// Load the client krb5 config
 	krb5ConfData, err := os.Open(globalConfig.KerberosConfigPath)
 	krb5Conf, err := config.NewFromReader(krb5ConfData)
 
 	if err != nil {
-		fmt.Printf("could not load krb5.conf: %v", err)
+		errInfo := fmt.Sprintf("could not load krb5.conf %s", err)
+		return nil, errors.New(errInfo)
 	}
 	cl := client.NewWithKeytab(SaslUsername, krb5Conf.Realms[0].Realm, kt, krb5Conf, client.DisablePAFXFAST(globalConfig.SaslDisablePAFXFast))
 	// Log in the client
 	err = cl.Login()
 	if err != nil {
-		fmt.Printf("could not login client %v", err)
+		errInfo := fmt.Sprintf("could not login client %s", err)
+		return nil, errors.New(errInfo)
 	}
 	// Form the request
 	r, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
-		fmt.Printf("could create request %v", err)
+		errInfo := fmt.Sprintf("could create request %s", err)
+		return nil, errors.New(errInfo)
 	}
 
 	spnegoCl := spnego.NewClient(cl, nil, SaslUsername)
 	resp, err := spnegoCl.Do(r)
 	if err != nil {
-		fmt.Printf("error making request %v", err)
+		errInfo := fmt.Sprintf("error making spnego request %s ,err is %s", requestURL, err)
+		return nil, errors.New(errInfo)
 	}
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, errors.New("read data from " + requestURL + " json failed")
+		errInfo := fmt.Sprintf("error read data from response body %s", err)
+		return nil, errors.New(errInfo)
 	}
 	var f = make(map[string]interface{})
 	err = json.Unmarshal(data, &f)
